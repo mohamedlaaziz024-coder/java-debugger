@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>¿Cómo funciona un Java Debugger?</title>
+<style>
+  :root {
+    --bg: #0f172a;
+    --panel: #1e293b;
+    --panel2: #27364d;
+    --ink: #e2e8f0;
+    --muted: #94a3b8;
+    --accent: #38bdf8;
+    --ok: #4ade80;
+    --warn: #fbbf24;
+    --stop: #f87171;
+    --line: #334155;
+    --mono: "Consolas", "Courier New", monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: system-ui, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    line-height: 1.5;
+  }
+  header {
+    text-align: center;
+    padding: 28px 16px 10px;
+  }
+  header h1 { margin: 0 0 6px; font-size: 1.8rem; }
+  header p { margin: 0; color: var(--muted); }
+  .wrap {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 16px;
+  }
+  .stage {
+    display: grid;
+    grid-template-columns: 1.3fr 1fr;
+    gap: 16px;
+  }
+  @media (max-width: 760px) {
+    .stage { grid-template-columns: 1fr; }
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 14px 16px;
+  }
+  .card h2 {
+    margin: 0 0 10px;
+    font-size: 1rem;
+    color: var(--accent);
+    letter-spacing: .5px;
+  }
+  /* Code panel */
+  .code { font-family: var(--mono); font-size: .95rem; }
+  .line {
+    display: flex;
+    gap: 10px;
+    padding: 3px 8px;
+    border-radius: 6px;
+    white-space: pre;
+    position: relative;
+  }
+  .line .ln {
+    color: var(--muted);
+    width: 22px;
+    text-align: right;
+    user-select: none;
+  }
+  .line.breakpoint .ln::before {
+    content: "";
+    position: absolute;
+    left: -2px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: var(--stop);
+    box-shadow: 0 0 6px var(--stop);
+  }
+  .line.current {
+    background: #3b4d2a;
+    box-shadow: inset 3px 0 0 var(--ok);
+  }
+  .tok-key { color: #c084fc; }
+  .tok-type { color: #5eead4; }
+  .tok-num { color: #fbbf24; }
+  .tok-com { color: #64748b; font-style: italic; }
+  /* Right column */
+  .vars div, .callstack div {
+    font-family: var(--mono);
+    font-size: .9rem;
+    padding: 5px 8px;
+    border-bottom: 1px dashed var(--line);
+    display: flex;
+    justify-content: space-between;
+  }
+  .vars .flash { animation: flash .6s ease; }
+  @keyframes flash {
+    0% { background: var(--warn); color: #000; }
+    100% { background: transparent; }
+  }
+  .callstack div:first-child { color: var(--ok); }
+  .status {
+    margin-top: 14px;
+    background: var(--panel2);
+    border-radius: 10px;
+    padding: 12px 14px;
+    min-height: 54px;
+  }
+  .status b { color: var(--accent); }
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: center;
+    margin: 18px 0 6px;
+  }
+  button {
+    background: var(--accent);
+    color: #04293a;
+    border: none;
+    border-radius: 8px;
+    padding: 9px 16px;
+    font-size: .95rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button.ghost {
+    background: transparent;
+    color: var(--ink);
+    border: 1px solid var(--line);
+  }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .legend {
+    display: flex;
+    gap: 18px;
+    flex-wrap: wrap;
+    justify-content: center;
+    color: var(--muted);
+    font-size: .85rem;
+    margin-top: 10px;
+  }
+  .dot {
+    display: inline-block;
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+  footer {
+    text-align: center;
+    color: var(--muted);
+    font-size: .8rem;
+    padding: 20px;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>¿Cómo funciona un Java Debugger?</h1>
+  <p>Un debugger para el programa paso a paso para que puedas mirar dentro.</p>
+</header>
+
+<div class="wrap">
+  <div class="stage">
+    <!-- Código -->
+    <div class="card">
+      <h2>CÓDIGO</h2>
+      <div class="code" id="code"></div>
+    </div>
+
+    <!-- Estado -->
+    <div>
+      <div class="card">
+        <h2>VARIABLES</h2>
+        <div class="vars" id="vars"></div>
+      </div>
+      <div class="card" style="margin-top:16px">
+        <h2>PILA DE LLAMADAS</h2>
+        <div class="callstack" id="stack"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="status" id="status">Pulsa <b>Iniciar</b> para empezar.</div>
+
+  <div class="controls">
+    <button id="btnStart">▶ Iniciar</button>
+    <button id="btnStep" class="ghost" disabled>⤵ Paso a paso</button>
+    <button id="btnReset" class="ghost" disabled>↺ Reiniciar</button>
+  </div>
+
+  <div class="legend">
+    <span><span class="dot" style="background:var(--stop)"></span>Breakpoint (parada)</span>
+    <span><span class="dot" style="background:var(--ok)"></span>Línea actual</span>
+    <span><span class="dot" style="background:var(--warn)"></span>Variable que cambió</span>
+  </div>
+</div>
+
+<footer>Hecho con HTML, CSS y JavaScript puros.</footer>
+
+<script>
+// ---- Programa de ejemplo que "ejecuta" el debugger ----
+const program = [
+  { t: 'int ', k: 'suma', rest: ' = 0;', line: 'int suma = 0;' },
+  { t: '', k: '', rest: 'for (int i = 1; i <= 3; i++) {', line: 'for (int i = 1; i <= 3; i++) {' },
+  { t: '', k: '', rest: '    suma = suma + i;', line: '    suma = suma + i;', bp: true },
+  { t: '', k: '', rest: '}', line: '}' },
+  { t: '', k: '', rest: 'System.out.println(suma);', line: 'System.out.println(suma);' }
+];
+
+// ---- Pasos que el debugger va mostrando ----
+// cada paso: línea activa, variables, pila, mensaje
+const steps = [
+  { line:0, vars:{suma:0}, stack:['main()'], changed:'suma',
+    msg:'El programa arranca. <b>suma</b> empieza en 0.' },
+  { line:1, vars:{suma:0,i:1}, stack:['main()'], changed:'i',
+    msg:'Empieza el bucle. <b>i</b> vale 1.' },
+  { line:2, vars:{suma:0,i:1}, stack:['main()'], changed:null, bpHit:true,
+    msg:'¡Breakpoint! El debugger <b>para</b> aquí antes de ejecutar la línea.' },
+  { line:2, vars:{suma:1,i:1}, stack:['main()'], changed:'suma',
+    msg:'Paso a paso: suma = 0 + 1 = <b>1</b>.' },
+  { line:1, vars:{suma:1,i:2}, stack:['main()'], changed:'i',
+    msg:'El bucle vuelve. Ahora <b>i</b> vale 2.' },
+  { line:2, vars:{suma:3,i:2}, stack:['main()'], changed:'suma', bpHit:true,
+    msg:'Breakpoint otra vez. suma = 1 + 2 = <b>3</b>.' },
+  { line:1, vars:{suma:3,i:3}, stack:['main()'], changed:'i',
+    msg:'El bucle vuelve. <b>i</b> vale 3.' },
+  { line:2, vars:{suma:6,i:3}, stack:['main()'], changed:'suma', bpHit:true,
+    msg:'Último giro. suma = 3 + 3 = <b>6</b>.' },
+  { line:4, vars:{suma:6,i:4}, stack:['main()'], changed:null,
+    msg:'El bucle termina. Se imprime <b>6</b>.' },
+  { line:-1, vars:{suma:6,i:4}, stack:[], changed:null,
+    msg:'Fin del programa. Así un debugger te deja mirar cada paso.' }
+];
+
+const codeEl = document.getElementById('code');
+const varsEl = document.getElementById('vars');
+const stackEl = document.getElementById('stack');
+const statusEl = document.getElementById('status');
+const btnStart = document.getElementById('btnStart');
+const btnStep = document.getElementById('btnStep');
+const btnReset = document.getElementById('btnReset');
+
+let idx = -1;
+let timer = null;
+let prevVars = {};
+
+function renderCode(activeLine) {
+  codeEl.innerHTML = program.map((p, i) => {
+    const cls = ['line'];
+    if (p.bp) cls.push('breakpoint');
+    if (i === activeLine) cls.push('current');
+    let html;
+    if (p.t) {
+      html = `<span class="tok-type">${p.t}</span>${p.k}<span class="tok-num">${p.rest}</span>`;
+    } else {
+      html = p.line.replace(/\b(for|int)\b/g, '<span class="tok-key">$1</span>')
+                   .replace(/\b(\d+)\b/g, '<span class="tok-num">$1</span>')
+                   .replace(/System\.out\.println/, '<span class="tok-type">System.out.println</span>');
+    }
+    return `<div class="${cls.join(' ')}"><span class="ln">${i+1}</span><span>${html}</span></div>`;
+  }).join('');
+}
+
+function renderVars(vars) {
+  varsEl.innerHTML = Object.keys(vars).map(k => {
+    const changed = prevVars[k] !== vars[k];
+    return `<div class="${changed ? 'flash' : ''}"><span>${k}</span><span>${vars[k]}</span></div>`;
+  }).join('') || '<div style="color:var(--muted)">— sin variables —</div>';
+  prevVars = {...vars};
+}
+
+function renderStack(stack) {
+  stackEl.innerHTML = stack.map(s => `<div>${s}</div>`).join('')
+    || '<div style="color:var(--muted)">— vacía —</div>';
+}
+
+function show(i) {
+  const s = steps[i];
+  renderCode(s.line);
+  renderVars(s.vars);
+  renderStack(s.stack);
+  statusEl.innerHTML = s.msg;
+}
+
+function next() {
+  if (idx >= steps.length - 1) { stop(); return; }
+  idx++;
+  show(idx);
+  if (steps[idx].bpHit) { stop(); } // en breakpoint se detiene el modo auto
+}
+
+function play() {
+  btnStart.textContent = '⏸ Pausar';
+  btnStep.disabled = false;
+  btnReset.disabled = false;
+  const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (prefersReduced) { next(); return; }
+  timer = setInterval(() => {
+    if (idx >= steps.length - 1) { stop(); return; }
+    next();
+    if (steps[idx] && steps[idx].bpHit) { stop(); }
+  }, 1600);
+}
+
+function stop() {
+  clearInterval(timer);
+  timer = null;
+  btnStart.textContent = (idx >= steps.length - 1) ? '▶ Iniciar' : '▶ Continuar';
+}
+
+function reset() {
+  stop();
+  idx = -1;
+  prevVars = {};
+  renderCode(-1);
+  varsEl.innerHTML = '<div style="color:var(--muted)">— sin variables —</div>';
+  stackEl.innerHTML = '<div style="color:var(--muted)">— vacía —</div>';
+  statusEl.innerHTML = 'Pulsa <b>Iniciar</b> para empezar.';
+  btnStep.disabled = true;
+  btnReset.disabled = true;
+  btnStart.textContent = '▶ Iniciar';
+}
+
+btnStart.onclick = () => {
+  if (timer) { stop(); return; }
+  if (idx >= steps.length - 1) reset();
+  play();
+};
+btnStep.onclick = () => { stop(); next(); };
+btnReset.onclick = reset;
+
+reset();
+</script>
+</body>
+</html>
